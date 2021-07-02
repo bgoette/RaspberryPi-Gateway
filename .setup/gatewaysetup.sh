@@ -9,11 +9,7 @@ GRN='\033[1;32m'
 YLW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
-APPSRVDIR=/home/${USER}/gateway/
-
-CONFIG=/boot/config.txt
-CMDLINE=/boot/cmdline.txt
-USER=${SUDO_USER:-$(who -m | awk '{ print $1 }')}
+APPSRVDIR=/home/$USER/gateway/
 
 echo -e "${GRN}#########################################################################${NC}"
 echo -e "${GRN}#         Low Power Lab Gateway App Setup - Ubuntu Server x64           #${NC}"
