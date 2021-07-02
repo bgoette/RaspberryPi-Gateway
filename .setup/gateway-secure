@@ -6,6 +6,7 @@
  
 server{
   listen 80;
+  listen 443 ssl;
   server_name gateway;
  
   #turn OFF the nginx version in error pages
@@ -17,20 +18,20 @@ server{
   allow 192.168.1.1/24; #allow whole LAN
   allow 127.0.0.1;      #allow localhost
   deny  all;            #deny everyone else
-  #auth_basic "Restricted";
-  #auth_basic_user_file /home/pi/gateway/data/secure/.htpasswd;
+  auth_basic "Restricted";
+  auth_basic_user_file /home/pi/gateway/data/secure/.htpasswd;
 
   # point to the SSL certificate required for SSL
-  #ssl_certificate /home/pi/gateway/data/secure/server.crt;
-  #ssl_certificate_key /home/pi/gateway/data/secure/server.key;
+  ssl_certificate /home/pi/gateway/data/secure/server.crt;
+  ssl_certificate_key /home/pi/gateway/data/secure/server.key;
  
   access_log /var/log/nginx/gateway.access.log;
   error_log /var/log/nginx/gateway.error.log;
  
   # Redirect all non-SSL traffic to SSL.
-  #if ($ssl_protocol = "") {
-  #  rewrite ^ https://$host$request_uri? permanent;
-  #}
+  if ($ssl_protocol = "") {
+    rewrite ^ https://$host$request_uri? permanent;
+  }
  
   # point to the www directory of this site, and setup the index pages
   root /home/pi/gateway/www;
