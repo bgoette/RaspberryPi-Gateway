@@ -53,13 +53,14 @@ if [ "$NODEYN" == "1)" ]; then
   echo -e "${RED}#          Installing Latest Node/NPM.              #${NC}"
   #could use git clone but that requires empty target directory which won't work if executed repeatedly
   sudo wget -O - https://raw.githubusercontent.com/audstanley/NodeJs-Raspberry-Pi/master/Install-Node.sh | sudo bash
-  sudo npm install -g npm
+  sudo npm install -g npm@latest
 else
   echo -e "${GRN}#          Make sure you already have Node/NPM installed.             #${NC}"
 fi
 
 echo -e "${CYAN}************* STEP: Setup Gateway app & dependencies *************${NC}"
 sudo mkdir -p $APPSRVDIR    #main dir where gateway app lives
+sudo chown -R $USER:$USER $APPSRVDIR
 cd $APPSRVDIR || exit
 
 #just for sanity
@@ -80,6 +81,7 @@ sudo mkdir $APPSRVDIR/logs -p
 
 #create db and empty placeholders so chown pi will override root permissions
 sudo mkdir $APPSRVDIR/data/db -p
+sudo chown -R $USER:$USER $APPSRVDIR
 touch $APPSRVDIR/data/db/gateway.db
 touch $APPSRVDIR/data/db/gateway_nonmatches.db
 
@@ -121,7 +123,7 @@ else
   echo -e "${RED}************** Not using HTTPS ***************${NC}"
 
   echo -e "${CYAN}************* STEP: Copy gateway site config to sites-available *************${NC}"
-  cp -rf $APPSRVDIR/.setup/gateway /etc/nginx/sites-available/gateway
+  sudo cp -rf $APPSRVDIR/.setup/gateway /etc/nginx/sites-available/gateway
 fi
 
 #determine php-fpm version and replace in gateway site config
