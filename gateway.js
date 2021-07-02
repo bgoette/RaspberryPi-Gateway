@@ -29,45 +29,53 @@
 // ********************************************************************************************
 // Note: In NodeJS modules are loaded synchronously and processed in the order they occur
 // ********************************************************************************************
-var nconf = require('nconf');                                   //https://github.com/indexzero/nconf
-var JSON5 = require('json5');                                   //https://github.com/aseemk/json5
-var path = require('path');
-var dbDir = 'data/db';
-var packageJson = require('./package.json')
-var coreMetricsFilePath = './metrics/core.js';
-nconf.argv().file({ file: './settings.json5', format: JSON5 });
-global.settings = nconf.get('settings');
-var dbLog = require('./logUtil.js');
-io = require('socket.io')().listen(settings.general.socketPort.value)    //usage in 2.3.0:  io = require('socket.io').listen(settings.general.socketPort.value);
-var serialport = require("serialport");                         //https://github.com/node-serialport/node-serialport
-var Datastore = require('nedb');                                //https://github.com/louischatriot/nedb
-var nodemailer = require('nodemailer');                         //https://github.com/andris9/Nodemailer
-var http = require('http');
-var url = require('url');
-db = new Datastore({ filename: path.join(__dirname, dbDir, settings.database.name.value), autoload: true });       //used to keep all node/metric data
-var dbCompacted = Date.now();
-var fs = require('fs');
-var gatewayUptime='';
-var gatewayFrequency='';
+
+import { argv, get, save } from 'nconf';                      // https://github.com/indexzero/nconf
+import JSON5 from 'json5';                                    // https://github.com/aseemk/json5
+import { join } from 'path';
+import { version as _version } from './package.json';
+import { getLogName, getData, removeMetricLog, deleteData, editData, postData } from './logUtil.js';
+import serialport, { list, parsers } from "serialport";                         //https://github.com/node-serialport/node-serialport
+import Datastore from 'nedb';                                //https://github.com/louischatriot/nedb
+import { createTransport } from 'nodemailer';                         //https://github.com/andris9/Nodemailer
+import { createServer } from 'http';
+import { parse } from 'url';
+import { lstatSync, readdirSync, statSync } from 'fs';
+
+const dbDir = 'data/db';
+const coreMetricsFilePath = './metrics/core.js';
+
+argv().file({ file: './settings.json5', format: JSON5 });
+
+global.settings = get('settings');
 global.port=undefined;
 global.parser=undefined;
-var unmatchedDataDB = null;
+
+io = require('socket.io')().listen(settings.general.socketPort.value)    //usage in 2.3.0:  io = require('socket.io').listen(settings.general.socketPort.value);
+db = new Datastore({ filename: join(__dirname, dbDir, settings.database.name.value), autoload: true });       //used to keep all node/metric data
+
+let dbCompacted = Date.now();
+let gatewayUptime='';
+let gatewayFrequency='';
+let unmatchedDataDB = null;
+
 if (settings.database.nonMatchesName.value)
-  unmatchedDataDB = new Datastore({ filename: path.join(__dirname, dbDir, settings.database.nonMatchesName.value), autoload: true });
+  unmatchedDataDB = new Datastore({ filename: join(__dirname, dbDir, settings.database.nonMatchesName.value), autoload: true });
+
 require("console-stamp")(console, settings.general.consoleLogDateFormat.value); //timestamp logs - https://github.com/starak/node-console-stamp
 
 //HTTP ENDPOINT - accept HTTP: data from the internet/LAN
-http.createServer(httpEndPointHandler).listen(8081);
+createServer(httpEndPointHandler).listen(8081);
 
 console.info('*********************************************************************');
 console.info('************************* GATEWAY APP START *************************');
 console.info('*********************************************************************');
-serialport.list().then(ports => { ports.forEach(function(port) { console.info(`Available serial port: ${JSON.stringify(port)}`) }); });
+list().then(ports => { ports.forEach(function(port) { console.info(`Available serial port: ${JSON.stringify(port)}`) }); });
 
-var openPort = (function f(reopen) {
+let openPort = (function f(reopen) {
   if (reopen && port.isOpen) port.close();
   port = new serialport(settings.serial.port.value, {baudRate : settings.serial.baud.value});
-  parser = port.pipe(new serialport.parsers.Readline()); //new serialport.parsers.Readline(); //port.pipe(parser);
+  parser = port.pipe(new parsers.Readline()); //new serialport.parsers.Readline(); //port.pipe(parser);
   parser.on('data', function(data) { processSerialData(data.replace(/\0/g, '')); }); //replace nulls in received string
   port.on('error', function serialErrorHandler(error) {
     msg = 'node-serialport error:' + error.message;
@@ -88,12 +96,12 @@ var openPort = (function f(reopen) {
 global.caseInsensitiveSorter = function (a, b) {return a.toLowerCase().localeCompare(b.toLowerCase())};
 String.prototype.replaceNewlines = function () { return this.replace(/(?:\r\n|\r|\n)/g, '\\n') };
 
-var merge = require('merge');
+import merge from 'merge';
 global.loadMetricsFile = function(file, globalizeFunctions, fatal) {
-  if (fs.lstatSync(file).isFile() && file.match(/\.js$/) !== null) {
+  if (lstatSync(file).isFile() && file.match(/\.js$/) !== null) {
     console.info(`LOADING METRICS MODULE [${file}]`);
     try {
-      var tmp = require(file);
+      let tmp = require(file);
       if (!global.metricsDef) global.metricsDef = {};
       metricsDef.metrics = merge(false, metricsDef.metrics, tmp.metrics);
       metricsDef.motes = merge(false, metricsDef.motes, tmp.motes);
@@ -124,15 +132,15 @@ global.loadMetricsFile = function(file, globalizeFunctions, fatal) {
 loadMetricsFile(coreMetricsFilePath, true, true); //import core metrics file and globalize its objects & functions
 // - Then load other metrics which can override core metrics
 try {
-  fs.readdirSync(__dirname + '/metrics').sort(caseInsensitiveSorter).forEach(function(file) {
-    var subdirs = [];
-    if (fs.lstatSync(__dirname + '/metrics/' + file).isDirectory()) //check 1 level subdirs only
+  readdirSync(__dirname + '/metrics').sort(caseInsensitiveSorter).forEach(function(file) {
+    let subdirs = [];
+    if (lstatSync(__dirname + '/metrics/' + file).isDirectory()) //check 1 level subdirs only
       subdirs.push(__dirname + '/metrics/' + file);
     else if (file != coreMetricsFilePath.substring(coreMetricsFilePath.lastIndexOf("/") + 1)) { //skip core.js, already loaded
       loadMetricsFile(__dirname + '/metrics/'+file, true);
     }
     subdirs.forEach(function(subdir){
-      fs.readdirSync(__dirname + '/metrics/'+file).sort(caseInsensitiveSorter).forEach(function(subdirFile) {
+      readdirSync(__dirname + '/metrics/'+file).sort(caseInsensitiveSorter).forEach(function(subdirFile) {
         loadMetricsFile(__dirname + '/metrics/'+file+'/'+subdirFile, true);
       });
     });
@@ -144,7 +152,7 @@ catch (ex) {
 
 db.persistence.setAutocompactionInterval(settings.database.compactDBInterval.value); //compact the database every 24hrs
 
-var transporter = nodemailer.createTransport({
+let transporter = createTransport({
   service: settings.credentials.emailservice.value, //"gmail" is preconfigured by nodemailer, but you can setup any other email client supported by nodemailer
   auth: {
     user: settings.credentials.email.value,
@@ -153,7 +161,7 @@ var transporter = nodemailer.createTransport({
 });
 
 global.sendEmail = function(SUBJECT, BODY, ATTACHMENTS) {
-  var mailOptions = {
+  let mailOptions = {
     from: 'Moteino Gateway <gateway@moteino.com>',
     to: settings.credentials.emailAlertsTo.value, // list of receivers, comma separated
     subject: SUBJECT,
@@ -168,7 +176,7 @@ global.sendEmail = function(SUBJECT, BODY, ATTACHMENTS) {
 }
 
 global.sendSMS = function(SUBJECT, BODY) {
-  var mailOptions = {
+  let mailOptions = {
       from: 'Gateway <gateway@moteino.com>',
       to: settings.credentials.smsAlertsTo.value, //your mobile carrier should have an email address that will generate a SMS to your phone
       subject: SUBJECT,
@@ -209,12 +217,12 @@ global.sendMessageToGateway = function(msg) {
 global.handleNodeEvents = function(node) {
   if (node.events)
   {
-    for (var key in node.events)
+    for (let key in node.events)
     {
     try {
       if (node.events[key] && node.events[key].enabled)
       {
-        var evt = metricsDef.events[key];
+        let evt = metricsDef.events[key];
         if (evt.serverExecute!=undefined)
           try {
             evt.serverExecute(node);
@@ -227,12 +235,12 @@ global.handleNodeEvents = function(node) {
 }
 
 global.getGraphData = function(nodeId, metricKey, start, end, exportMode) {
-  var sts = Math.floor(start / 1000); //get timestamp in whole seconds
-  var ets = Math.floor(end / 1000); //get timestamp in whole seconds
-  var logfile = path.join(__dirname, dbDir, dbLog.getLogName(nodeId,metricKey));
-  var graphData = dbLog.getData(logfile, sts, ets, exportMode ? 100000 : settings.general.graphMaxPoints.value); //100k points when exporting, more points is really pointless
-  var graphOptions={};
-  for(var k in metricsDef.metrics)
+  let sts = Math.floor(start / 1000); //get timestamp in whole seconds
+  let ets = Math.floor(end / 1000); //get timestamp in whole seconds
+  let logfile = join(__dirname, dbDir, getLogName(nodeId,metricKey));
+  let graphData = getData(logfile, sts, ets, exportMode ? 100000 : settings.general.graphMaxPoints.value); //100k points when exporting, more points is really pointless
+  let graphOptions={};
+  for(let k in metricsDef.metrics)
   {
     if (metricsDef.metrics[k].name == metricKey)
     {
@@ -249,10 +257,10 @@ global.getNodeIcons = function(dir, files_, steps){
   files_ = files_ || [];
   dir = dir || __dirname + '/www/images';
   steps = steps || 0;
-  var files = fs.readdirSync(dir);
-  for (var i in files){
-    var name = dir + '/' + files[i];
-    if (fs.statSync(name).isDirectory() && steps==0) //recurse 1 level only
+  let files = readdirSync(dir);
+  for (let i in files){
+    let name = dir + '/' + files[i];
+    if (statSync(name).isDirectory() && steps==0) //recurse 1 level only
       getNodeIcons(name, files_, steps+1);
     else if (files[i].match(/^icon_.+\.(bmp|png|jpg|jpeg|ico)$/ig)) //images only
       files_.push(name.replace(__dirname+'/www/images/',''));
@@ -264,7 +272,7 @@ global.getNodeIcons = function(dir, files_, steps){
 //if you comment out this section, you will be able to hit this socket directly at the port it's running at, from anywhere!
 //this was tested on Socket.IO v1.2.1 and will not work on older versions
 io.use(function(socket, next) {
-  var handshakeData = socket.request.connection;
+  let handshakeData = socket.request.connection;
   console.info(`AUTHORIZING CONNECTION FROM ${handshakeData.remoteAddress}:${handshakeData.remotePort}`);
   if (handshakeData.remoteAddress == "localhost" || handshakeData.remoteAddress == "127.0.0.1" || handshakeData.remoteAddress == "::1" || handshakeData.remoteAddress == "::ffff:127.0.0.1")
   {
@@ -273,7 +281,7 @@ io.use(function(socket, next) {
   }
   else
   {
-    var msg = 'REJECTED IDENTITY [' + handshakeData.remoteAddress + '], not coming from localhost';
+    let msg = 'REJECTED IDENTITY [' + handshakeData.remoteAddress + '], not coming from localhost';
     console.error(msg);
     next(new Error(msg));
   }
@@ -284,7 +292,7 @@ function broadcastServerInfo(socket) {
     uptime:(Date.now() - process.uptime()*1000),
     gatewayUptime:(isNumeric(gatewayUptime) ? gatewayUptime : 'unknown'),
     gatewayFrequency:(isNumeric(gatewayFrequency) ? gatewayFrequency : 'unknown'),
-    version: packageJson.version,
+    version: _version,
     nodeVersion: process.version,
     serverMillisSinceEpoch: Date.now(),
   };
@@ -295,8 +303,8 @@ function broadcastServerInfo(socket) {
 }
 
 io.sockets.on('connection', function (socket) {
-  var address = socket.handshake.headers['x-forwarded-for'] || socket.request.connection.remoteAddress;
-  //var port = socket.request.connection.remotePort;
+  let address = socket.handshake.headers['x-forwarded-for'] || socket.request.connection.remoteAddress;
+  //let port = socket.request.connection.remotePort;
   console.info("NEW CONNECTION FROM " + address /*+ ":" + port*/);
   socket.emit('METRICSDEF', metricsDef);
   socket.emit('SETTINGSDEF', settings);
@@ -325,7 +333,7 @@ io.sockets.on('connection', function (socket) {
 
   socket.on('UPDATENODELISTORDER', function (newOrder) {
     db.findOne({_id:'NODELISTORDER'}, function (err, doc) {
-      var entry = {_id:'NODELISTORDER', order:newOrder};
+      let entry = {_id:'NODELISTORDER', order:newOrder};
       if (doc == null)
         db.insert(entry);
       else
@@ -338,7 +346,7 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : node._id }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         dbNode.type = node.type||undefined;
         dbNode.label = node.label||undefined;
         dbNode.descr = node.descr||undefined;
@@ -355,7 +363,7 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         dbNode.metrics[metricKey].label = metric.label;
         dbNode.metrics[metricKey].pin = (metric.pin==1) ? Date.now() : metric.pin;
         dbNode.metrics[metricKey].graph = metric.graph;
@@ -369,10 +377,10 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
 
         //cross check key to ensure it exists, then add it to the node events collection and persist to DB
-        for(var key in metricsDef.events)
+        for(let key in metricsDef.events)
           if (eventKey == key)
           {
             if (!dbNode.events) dbNode.events = {};
@@ -391,7 +399,7 @@ io.sockets.on('connection', function (socket) {
               }
               else //either disabled or removed
               {
-                for(var s in scheduledEvents)
+                for(let s in scheduledEvents)
                 {
                   if (scheduledEvents[s].nodeId == nodeId && scheduledEvents[s].eventKey == eventKey)
                   {
@@ -419,12 +427,12 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
-        var newGraph = [];
+        let dbNode = entries[0];
+        let newGraph = [];
         if (!dbNode.multiGraphs) dbNode.multiGraphs = []; //an array of metric-key arrays eg. [['Temp','RSSI'], ['Temp', 'Humidity', 'Voltage'], ...]
-        for(var arrayKey in selectedMetrics)
+        for(let arrayKey in selectedMetrics)
         {
-          var metricKey = selectedMetrics[arrayKey];
+          let metricKey = selectedMetrics[arrayKey];
           if (Object.keys(dbNode.metrics).includes(metricKey)) //verify node metrics contains selected metric
           {
             newGraph.push(metricKey);
@@ -442,7 +450,7 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         dbNode.multiGraphs = undefined;
         db.update({ _id: dbNode._id }, { $set : dbNode}, {}, function (err, numReplaced) { /*console.log('UPDATEMETRICSETTINGS records replaced:' + numReplaced);*/ });
         io.sockets.emit('UPDATENODE', dbNode); //post it back to all clients to confirm UI changes
@@ -456,11 +464,11 @@ io.sockets.on('connection', function (socket) {
       db.find({ _id : nodeId }, function (err, entries) {
         if (entries.length == 1)
         {
-          var dbNode = entries[0];
+          let dbNode = entries[0];
           if (dbNode.metrics) {
             Object.keys(dbNode.metrics).forEach(function(mKey,index) { //syncronous/blocking call
               if (dbNode.metrics[mKey].graph == 1)
-                dbLog.removeMetricLog(path.join(__dirname, dbDir, dbLog.getLogName(dbNode._id, mKey)));
+                removeMetricLog(join(__dirname, dbDir, getLogName(dbNode._id, mKey)));
             });
           }
         }
@@ -477,7 +485,7 @@ io.sockets.on('connection', function (socket) {
     });
 
     //remove scheduled events associated with the deleted node
-    for(var s in scheduledEvents)
+    for(let s in scheduledEvents)
       if (scheduledEvents[s].nodeId == nodeId)
       {
         console.log(`**** REMOVING SCHEDULED EVENT FOR DELETED NODE - NodeId:${nodeId} event:${scheduledEvents[s].eventKey}`);
@@ -490,11 +498,11 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         delete(dbNode.metrics[metricKey]);
         db.update({ _id: dbNode._id }, { $set : dbNode}, {}, function (err, numReplaced) { console.info('DELETENODEMETRIC DB-Replaced:' + numReplaced); });
         if (settings.general.keepMetricLogsOnDelete.value != 'true')
-          dbLog.removeMetricLog(path.join(__dirname, dbDir, dbLog.getLogName(dbNode._id, metricKey)));
+          removeMetricLog(join(__dirname, dbDir, getLogName(dbNode._id, metricKey)));
         io.sockets.emit('UPDATENODE', dbNode); //post it back to all clients to confirm UI changes
       }
     });
@@ -504,7 +512,7 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         reqName = dbNode.requests[requestKey].name;
         reqValue = dbNode.requests[requestKey].value;
         sendMessageToGateway(dbNode._id+':VOID:'+reqName+(reqValue?':'+reqValue:'')); //remove pending request from gateway's REQUEST queue
@@ -516,14 +524,14 @@ io.sockets.on('connection', function (socket) {
   });
   
   socket.on('DELETEMETRICDATA', function (nodeId, metricKey, start, end) {
-    var sts = Math.floor(start / 1000); //get timestamp in whole seconds
-    var ets = Math.floor(end / 1000); //get timestamp in whole seconds
+    let sts = Math.floor(start / 1000); //get timestamp in whole seconds
+    let ets = Math.floor(end / 1000); //get timestamp in whole seconds
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
-        var logfile = path.join(__dirname, dbDir, dbLog.getLogName(dbNode._id, metricKey));
-        var count = dbLog.deleteData(logfile, sts, ets);
+        let dbNode = entries[0];
+        let logfile = join(__dirname, dbDir, getLogName(dbNode._id, metricKey));
+        let count = deleteData(logfile, sts, ets);
         console.info('DELETEMETRICDATA DB-Removed points:' + count);
         //if (settings.general.keepMetricLogsOnDelete.value != 'true')
         socket.emit('DELETEMETRICDATA_OK', count); //post it back to requesting client only
@@ -532,14 +540,14 @@ io.sockets.on('connection', function (socket) {
   });
 
   socket.on('EDITMETRICDATA', function (nodeId, metricKey, start, end, newValue) {
-    var sts = Math.floor(start / 1000); //get timestamp in whole seconds
-    var ets = Math.floor(end / 1000); //get timestamp in whole seconds
+    let sts = Math.floor(start / 1000); //get timestamp in whole seconds
+    let ets = Math.floor(end / 1000); //get timestamp in whole seconds
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
-        var logfile = path.join(__dirname, dbDir, dbLog.getLogName(dbNode._id, metricKey));
-        var count = dbLog.editData(logfile, sts, ets, newValue);
+        let dbNode = entries[0];
+        let logfile = join(__dirname, dbDir, getLogName(dbNode._id, metricKey));
+        let count = editData(logfile, sts, ets, newValue);
         console.info(`EDITMETRICDATA DB-Updated points:${count} to:${newValue}`);
         socket.emit('EDITMETRICDATA_OK', count); //post it back to requesting client only
       }
@@ -582,7 +590,7 @@ io.sockets.on('connection', function (socket) {
       db.findOne({_id:node.nodeId}, function (err, doc) {
         if (doc == null)
         {
-          var entry = { _id:node.nodeId, updated:Date.now(), label:node.label || 'NEW NODE', metrics:{} };
+          let entry = { _id:node.nodeId, updated:Date.now(), label:node.label || 'NEW NODE', metrics:{} };
           db.insert(entry);
           console.info(`   [${node.nodeId}] DB-Insert new _id:${node.nodeId}`);
           socket.emit('LOG', 'NODE ADDED, ID: ' + node.nodeId);
@@ -599,7 +607,7 @@ io.sockets.on('connection', function (socket) {
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         if (dbNode.requests == undefined) dbNode.requests = {};
 
         isNew = false;
@@ -630,25 +638,25 @@ io.sockets.on('connection', function (socket) {
   });
 
   socket.on('GETGRAPHDATA', function (nodeId, metricKey, start, end, exportMode) {
-    var graphData = getGraphData(nodeId, metricKey, start, end, exportMode);
+    let graphData = getGraphData(nodeId, metricKey, start, end, exportMode);
     socket.emit(exportMode ? 'EXPORTGRAPHDATAREADY' : 'GRAPHDATAREADY', graphData);
   });
 
   socket.on('GETMULTIGRAPHDATA', function (nodeId, multiGraphId, start, end, exportMode) {
-    var sts = Math.floor(start / 1000); //get timestamp in whole seconds
-    var ets = Math.floor(end / 1000); //get timestamp in whole seconds
-    var series = [];
+    let sts = Math.floor(start / 1000); //get timestamp in whole seconds
+    let ets = Math.floor(end / 1000); //get timestamp in whole seconds
+    let series = [];
 
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         if (dbNode.multiGraphs && dbNode.multiGraphs[multiGraphId])
         {
-          var multiGraphKeysArray = dbNode.multiGraphs[multiGraphId];
+          let multiGraphKeysArray = dbNode.multiGraphs[multiGraphId];
           Object.keys(dbNode.metrics).forEach(function(mKey,index) { //syncronous/blocking call
             if (multiGraphKeysArray.includes(mKey) && dbNode.metrics[mKey].graph == 1) {
-              var graphData = getGraphData(nodeId, mKey, start, end, exportMode);
+              let graphData = getGraphData(nodeId, mKey, start, end, exportMode);
               series.push(graphData);
             }
           });
@@ -659,18 +667,18 @@ io.sockets.on('connection', function (socket) {
   });
 
   socket.on('EXPORTNODELOGSCSV', function (nodeId, start, end, howManyPoints) {
-    var sts = Math.floor(start / 1000); //get timestamp in whole seconds
-    var ets = Math.floor(end / 1000); //get timestamp in whole seconds
-    var sets = [];
+    let sts = Math.floor(start / 1000); //get timestamp in whole seconds
+    let ets = Math.floor(end / 1000); //get timestamp in whole seconds
+    let sets = [];
 
     db.find({ _id : nodeId }, function (err, entries) {
       if (entries.length == 1)
       {
-        var dbNode = entries[0];
+        let dbNode = entries[0];
         Object.keys(dbNode.metrics).forEach(function(mKey,index) { //syncronous/blocking call
           if (dbNode.metrics[mKey].graph == 1) {
-            var logfile = path.join(__dirname, dbDir, dbLog.getLogName(dbNode._id, mKey));
-            var theData = dbLog.getData(logfile, sts, ets, howManyPoints /*settings.general.graphMaxPoints.value*/);
+            let logfile = join(__dirname, dbDir, getLogName(dbNode._id, mKey));
+            let theData = getData(logfile, sts, ets, howManyPoints /*settings.general.graphMaxPoints.value*/);
             theData.label = dbNode.metrics[mKey].label || mKey;
             sets.push(theData); //100k points when exporting, more points is really pointless
           }
@@ -682,18 +690,18 @@ io.sockets.on('connection', function (socket) {
   
   socket.on('UPDATESETTINGSDEF', function (newSettings) {
     //console.info(`UPDATESETTINGSDEF requested, new settings: ${JSON.stringify(newSettings)}`);
-    var settings = nconf.get('settings');
-    var changed=false;
-    var baudChangedTo = 0;
-    var portChangedTo = undefined;
+    let settings = get('settings');
+    let changed=false;
+    let baudChangedTo = 0;
+    let portChangedTo = undefined;
 
-    for(var sectionName in settings)
+    for(let sectionName in settings)
     {
-      var sectionSettings = settings[sectionName];
+      let sectionSettings = settings[sectionName];
       if (sectionSettings.exposed===false || sectionSettings.editable===false) continue;
-      for(var settingName in sectionSettings)
+      for(let settingName in sectionSettings)
       {
-        var setting = sectionSettings[settingName];
+        let setting = sectionSettings[settingName];
         if (setting.exposed===false || setting.editable===false) continue
         if (setting.value == undefined || newSettings[sectionName][settingName].value == undefined) continue;
         if (setting.value != newSettings[sectionName][settingName].value) {
@@ -707,7 +715,7 @@ io.sockets.on('connection', function (socket) {
 
     if (changed) {
       global.settings = settings;
-      nconf.save(function (err) {
+      save(function (err) {
         if (err !=null)
           socket.emit('LOG', 'UPDATESETTINGSDEF ERROR: '+err);
         else
@@ -748,8 +756,8 @@ io.sockets.on('connection', function (socket) {
 
 //entries should contain the node list and also a node that contains the order (if this was ever added)
 function sortNodes(entries) {
-  var orderCSV;
-  for (var i = entries.length-1; i>=0; i--)
+  let orderCSV;
+  for (let i = entries.length-1; i>=0; i--)
     if (!isValidNodeId(entries[i]._id)) //remove non-numeric id nodes
     {
       if ((entries[i]._id).toString().toUpperCase() == 'NODELISTORDER') //if node order entry was found, remember it
@@ -792,10 +800,10 @@ global.handleNodeRequest = function (existingNode, reqName, oldValue, newValue, 
 
 global.msgHistory = new Array();
 global.processSerialData = function (data, simulated) {
-  var regexNodeData = /\[(\d+)\]([a-z0-9!"#\$%&'()*+,.\/:;<=>?@\[\] ^_`{|}~-]+)/ig; //modifiers: g:global i:caseinsensitive
-  var regexTokenizedLine = /[a-z0-9!"#\$%&'()*+,.\/:;<=>?@\[\]^_`{|}~-]+/ig; //match (almost) any non whitespace human readable character
-  var regexpGeneralRequests = /^([_a-z][_a-z0-9]*)(\:[-_a-z0-9]+)?(\:[-_a-z0-9]+)?(\:[-_a-z0-9]+)?$/i; //up to 5 capture groups: [0]whole_string [1]name ([2]:optional value) ([3]:optional status) ([4]:optional extra)
-  var match = regexNodeData.exec(data);
+  let regexNodeData = /\[(\d+)\]([a-z0-9!"#\$%&'()*+,.\/:;<=>?@\[\] ^_`{|}~-]+)/ig; //modifiers: g:global i:caseinsensitive
+  let regexTokenizedLine = /[a-z0-9!"#\$%&'()*+,.\/:;<=>?@\[\]^_`{|}~-]+/ig; //match (almost) any non whitespace human readable character
+  let regexpGeneralRequests = /^([_a-z][_a-z0-9]*)(\:[-_a-z0-9]+)?(\:[-_a-z0-9]+)?(\:[-_a-z0-9]+)?$/i; //up to 5 capture groups: [0]whole_string [1]name ([2]:optional value) ([3]:optional status) ([4]:optional extra)
+  let match = regexNodeData.exec(data);
   let log = `${settings.serial.port.value}${simulated?'(simulated)':''}>:` + data;
   console.log(log)
   io.sockets.emit('LOG', log);
@@ -803,12 +811,12 @@ global.processSerialData = function (data, simulated) {
   //first try to match normal data from nodes: [nodeID] token:value ... token:value RSSI:-XX
   if (match != null)
   {
-    var msgTokens = match[2];
-    var id = parseInt(match[1]); //get ID of node
+    let msgTokens = match[2];
+    let id = parseInt(match[1]); //get ID of node
 
     db.findOne({ _id : id }, function (err, dbEntry) {
-      var existingNode = {};
-      var hasMatchedMetrics = false;
+      let existingNode = {};
+      let hasMatchedMetrics = false;
       if (dbEntry != null) existingNode = dbEntry; //update
 
       //check for duplicate messages - this can happen when the remote node sends an ACK-ed message but does not get the ACK so it resends same message repeatedly until it receives an ACK
@@ -826,15 +834,15 @@ global.processSerialData = function (data, simulated) {
 
       while (match = regexTokenizedLine.exec(msgTokens)) //extract each token/value pair from the message and process it
       {
-        var matchingMetric;
+        let matchingMetric;
 
         //try to match a metric definition
-        for(var metric in metricsDef.metrics)
+        for(let metric in metricsDef.metrics)
         {
           if (metricsDef.metrics[metric].regexp.test(match[0]))
           {
             //found matching metric, extract the token:value and add/update the node with it
-            var tokenMatch = metricsDef.metrics[metric].regexp.exec(match[0]);
+            let tokenMatch = metricsDef.metrics[metric].regexp.exec(match[0]);
             matchingMetric = metricsDef.metrics[metric];
 
             //handle TYPE metric
@@ -879,14 +887,14 @@ global.processSerialData = function (data, simulated) {
             //log data for graphing purposes, keep labels as short as possible since this log will grow indefinitely and is not compacted like the node database
             if (existingNode.metrics[matchingMetric.name].graph==1)
             {
-              var graphValue = isNumeric(matchingMetric.logValue) ? matchingMetric.logValue : determineGraphValue(matchingMetric, tokenMatch); //existingNode.metrics[matchingMetric.name].value;
+              let graphValue = isNumeric(matchingMetric.logValue) ? matchingMetric.logValue : determineGraphValue(matchingMetric, tokenMatch); //existingNode.metrics[matchingMetric.name].value;
               if (isNumeric(graphValue))
               {
-                var ts = Math.floor(Date.now() / 1000); //get timestamp in whole seconds
-                var logfile = path.join(__dirname, dbDir, dbLog.getLogName(id, matchingMetric.name));
+                let ts = Math.floor(Date.now() / 1000); //get timestamp in whole seconds
+                let logfile = join(__dirname, dbDir, getLogName(id, matchingMetric.name));
                 try {
                   console.log('post: ' + logfile + '[' + ts + ','+graphValue + ']');
-                  dbLog.postData(logfile, ts, graphValue, matchingMetric.duplicateInterval || null);
+                  postData(logfile, ts, graphValue, matchingMetric.duplicateInterval || null);
                 } catch (err) { console.error('   POST ERROR: ' + err.message); /*console.log('   POST ERROR STACK TRACE: ' + err.stack); */ } //because this is a callback concurrent calls to the same log, milliseconds apart, can cause a file handle concurrency exception
               }
               else console.log('   METRIC NOT NUMERIC, logging skipped... (extracted value:' + graphValue + ')');
@@ -898,7 +906,7 @@ global.processSerialData = function (data, simulated) {
         }
 
         //no matched metrics, last chance: look for any on-the-fly/manually added requests or requests with custom/unknown/non-matching statuses
-        var tokenMatch = regexpGeneralRequests.exec(match[0]);
+        let tokenMatch = regexpGeneralRequests.exec(match[0]);
         if (tokenMatch) {
           reqName = tokenMatch[1];
           if (existingNode.requests && existingNode.requests[reqName] != null) //found an on-the-fly node request for the node
@@ -918,7 +926,7 @@ global.processSerialData = function (data, simulated) {
       }
 
       //prepare entry to save to DB, undefined values will not be saved, hence saving space
-      var entry = {
+      let entry = {
         _id:id,
         updated:existingNode.updated,
         type:existingNode.type||undefined,
@@ -966,8 +974,8 @@ global.processSerialData = function (data, simulated) {
     while (match = regexTokenizedLine.exec(data)) //extract each whitespace separated token/value pair from serial data and process it
     {
       somethingMatched=true;
-      var tokenMatch = regexpGeneralRequests.exec(match[0]);  //format is  REQUEST:VALUE:STATUS  with VALUE and STATUS optional
-      var partialMatch = false;
+      let tokenMatch = regexpGeneralRequests.exec(match[0]);  //format is  REQUEST:VALUE:STATUS  with VALUE and STATUS optional
+      let partialMatch = false;
       
       //check "known" REQUESTs
       if (tokenMatch != null) {
@@ -984,13 +992,13 @@ global.processSerialData = function (data, simulated) {
           // if for any reason the RF gateway resets, any queued REQUESTS are lost (the queue is dynamically allocated in RAM)
           // hence: (re)send any PENDING requests for any nodes to make sure the GATEWAY has them ready for the (sleepy) target nodes
           db.find({ _id : { $exists: true }, requests : { $exists: true } }, function (err, entries) {
-            var updates = [];
-            var ts = Date.now();
+            let updates = [];
+            let ts = Date.now();
             
-            for (var i = 0; i < entries.length; i++) {
-              var nodeUpdated=false;
-              var dbNode = entries[i];
-              for (var key in dbNode.requests) {
+            for (let i = 0; i < entries.length; i++) {
+              let nodeUpdated=false;
+              let dbNode = entries[i];
+              for (let key in dbNode.requests) {
                 if (dbNode.requests[key].status=='PENDING')
                 {
                   reqValue = dbNode.requests[key].value;
@@ -1050,32 +1058,32 @@ global.processSerialData = function (data, simulated) {
 }
 
 function httpEndPointHandler(req, res) {
-  var queryString = url.parse(req.url, true).query; //parse query string
-  var ip = req.headers['x-forwarded-for'] /*|| req.connection.remoteAddress*/; //appended by nginx proxy
-  var id = queryString.id || ip;
+  let queryString = parse(req.url, true).query; //parse query string
+  let ip = req.headers['x-forwarded-for'] /*|| req.connection.remoteAddress*/; //appended by nginx proxy
+  let id = queryString.id || ip;
 
   if (isValidNodeId(id))
   {
     if (isNumeric(id)) id = parseInt(id);
     db.find({ _id : id }, function (err, entries) {
-      var existingNode = {};
-      var matchedMetrics = 0;
+      let existingNode = {};
+      let matchedMetrics = 0;
       if (entries.length == 1) existingNode = entries[0]; //update
       existingNode._id = id;
       if (isNumeric(id)) existingNode._ip = ip; //add/override IP address for HTTP requests, if node ID was specified as a number (so we know what IP to send requests back to)
       existingNode.updated = Date.now(); //update timestamp we last heard from this node, regardless of any matches
       if (existingNode.metrics == undefined) existingNode.metrics = {};
 
-      for (var queryStringKey in queryString)
+      for (let queryStringKey in queryString)
       {
-        var matchingMetric;
-        var token;
-        for(var metric in metricsDef.metrics) //try to match a metric definition
+        let matchingMetric;
+        let token;
+        for(let metric in metricsDef.metrics) //try to match a metric definition
         {
           token = queryStringKey.trim()+':'+queryString[queryStringKey].trim();
           if (metricsDef.metrics[metric].regexp.test(token))
           {
-            var tokenMatch = metricsDef.metrics[metric].regexp.exec(queryStringKey+':'+queryString[queryStringKey]);
+            let tokenMatch = metricsDef.metrics[metric].regexp.exec(queryStringKey+':'+queryString[queryStringKey]);
             matchingMetric = metricsDef.metrics[metric];
             if (existingNode.metrics[matchingMetric.name] == null) existingNode.metrics[matchingMetric.name] = {};
             existingNode.metrics[matchingMetric.name].label = existingNode.metrics[matchingMetric.name].label || matchingMetric.name;
@@ -1089,14 +1097,14 @@ function httpEndPointHandler(req, res) {
             //log data for graphing purposes, keep labels as short as possible since this log will grow indefinitely and is not compacted like the node database
             if (existingNode.metrics[matchingMetric.name].graph==1)
             {
-              var graphValue = isNumeric(matchingMetric.logValue) ? matchingMetric.logValue : determineGraphValue(matchingMetric, tokenMatch); //existingNode.metrics[matchingMetric.name].value;
+              let graphValue = isNumeric(matchingMetric.logValue) ? matchingMetric.logValue : determineGraphValue(matchingMetric, tokenMatch); //existingNode.metrics[matchingMetric.name].value;
               if (isNumeric(graphValue))
               {
-                var ts = Math.floor(Date.now() / 1000); //get timestamp in whole seconds
-                var logfile = path.join(__dirname, dbDir, dbLog.getLogName(id, matchingMetric.name));
+                let ts = Math.floor(Date.now() / 1000); //get timestamp in whole seconds
+                let logfile = join(__dirname, dbDir, getLogName(id, matchingMetric.name));
                 try {
                   console.log(`post: ${logfile} [${ts},${graphValue}]`);
-                  dbLog.postData(logfile, ts, graphValue, matchingMetric.duplicateInterval || null);
+                  postData(logfile, ts, graphValue, matchingMetric.duplicateInterval || null);
                 } catch (err) { console.error('   POST ERROR: ' + err.message); /*console.log('   POST ERROR STACK TRACE: ' + err.stack); */ } //because this is a callback concurrent calls to the same log, milliseconds apart, can cause a file handle concurrency exception
               }
               else console.log('   METRIC NOT NUMERIC, logging skipped... (extracted value:' + graphValue + ')');
@@ -1109,7 +1117,7 @@ function httpEndPointHandler(req, res) {
       }
 
       //prepare entry to save to DB, undefined values will not be saved, hence saving space
-      var entry = {
+      let entry = {
         _id:id,
         _ip:existingNode._ip,
         updated:existingNode.updated,
@@ -1162,25 +1170,25 @@ function httpEndPointHandler(req, res) {
 
 
 //keep track of scheduler based events - these need to be kept in sych with the UI - if UI removes an event, it needs to be cancelled from here as well; if UI adds a scheduled event it needs to be scheduled and added here also
-var scheduledEvents = []; //each entry should be defined like this: {nodeId, eventKey, timer}
+let scheduledEvents = []; //each entry should be defined like this: {nodeId, eventKey, timer}
 
 //schedule and register a scheduled type event
 global.schedule = function(node, eventKey) {
-  var nextRunTimeout = metricsDef.events[eventKey].nextSchedule(node);
+  let nextRunTimeout = metricsDef.events[eventKey].nextSchedule(node);
 
   if (nextRunTimeout < 1000)
   {
     console.error(`**** SCHEDULING EVENT ERROR - nodeId:${node._id} event:${eventKey} cannot schedule event in ${nextRunTimeout}ms (less than 1s)`);
     return;
   }
-  var hrs = parseInt(nextRunTimeout/3600000);
-  var min = parseInt((nextRunTimeout - hrs*3600000) / 60000);
-  var sec = parseInt((nextRunTimeout - hrs*3600000 - min*60000) / 1000);
-  var timeoutStr = (hrs > 0 ? hrs+'h': '') + (min>0?min+'m':'') + (sec>0&&hrs==0?sec+'s':'');
+  let hrs = parseInt(nextRunTimeout/3600000);
+  let min = parseInt((nextRunTimeout - hrs*3600000) / 60000);
+  let sec = parseInt((nextRunTimeout - hrs*3600000 - min*60000) / 1000);
+  let timeoutStr = (hrs > 0 ? hrs+'h': '') + (min>0?min+'m':'') + (sec>0&&hrs==0?sec+'s':'');
   console.info(`**** SCHEDULING EVENT - nodeId:${node._id} event:${eventKey} to run in ~${timeoutStr}`);
 
   //clear any previous instances of the event
-  for(var s in scheduledEvents)
+  for(let s in scheduledEvents)
     if (scheduledEvents[s].nodeId == node._id && scheduledEvents[s].eventKey == eventKey)
     {
       clearTimeout(scheduledEvents[s].timer);
@@ -1188,7 +1196,7 @@ global.schedule = function(node, eventKey) {
     }
 
   //schedule event in the future at calculated timer delay
-  var theTimer = setTimeout(runAndReschedule, nextRunTimeout, metricsDef.events[eventKey].scheduledExecute, node, eventKey); //http://www.w3schools.com/jsref/met_win_settimeout.asp
+  let theTimer = setTimeout(runAndReschedule, nextRunTimeout, metricsDef.events[eventKey].scheduledExecute, node, eventKey); //http://www.w3schools.com/jsref/met_win_settimeout.asp
 
   //remember the timer ID so we can clear it later
   scheduledEvents.push({nodeId:node._id, eventKey:eventKey, timer:theTimer}); //save nodeId, eventKey and timer (needs to be removed if the event is disabled/removed from the UI)
@@ -1212,7 +1220,7 @@ global.runAndReschedule = function(functionToExecute, nodeAtScheduleTime, eventK
     }
     catch (ex)
     {
-      var msg = 'Event ' + eventKey + ' execution failed: ' + ex.message;
+      let msg = 'Event ' + eventKey + ' execution failed: ' + ex.message;
       console.error(msg);
       io.sockets.emit('LOG', msg);
     }
@@ -1222,10 +1230,10 @@ global.runAndReschedule = function(functionToExecute, nodeAtScheduleTime, eventK
 
 //this runs once at startup: register scheduled events that are enabled
 db.find({ events : { $exists: true } }, function (err, entries) {
-  var count=0;
+  let count=0;
 
-  for (var k in entries)
-    for (var i in entries[k].events)
+  for (let k in entries)
+    for (let i in entries[k].events)
     {
       if (entries[k].events[i].enabled) //enabled events only
       {
@@ -1245,13 +1253,13 @@ sendMessageToGateway('\nUPTIME\nFREERAM\nSYSFREQ');
 setInterval(function(){
   //pull all nodes from the database and check each node's request collection
   db.find({ _id : { $exists: true }, requests : { $exists: true } }, function (err, entries) {
-    var updates = [];
-    var ts = Date.now();
+    let updates = [];
+    let ts = Date.now();
     
-    for (var i = 0; i < entries.length; i++) {
-      var nodeUpdated=false;
-      var dbNode = entries[i];
-        for (var key in dbNode.requests) {
+    for (let i = 0; i < entries.length; i++) {
+      let nodeUpdated=false;
+      let dbNode = entries[i];
+        for (let key in dbNode.requests) {
           if ((['PENDING'].indexOf(dbNode.requests[key].status) > -1)
               && (ts - dbNode.requests[key].timeout > dbNode.requests[key].updated))
           {
